@@ -69,13 +69,31 @@ A powerful, web-based MySQL database management system built with PHP and Bootst
    ```
 
 2. **Configure Database Connection**
-   Edit the database configuration at the top of the PHP file:
+   By default, the app connects automatically with the configured MySQL user and shows all available databases when `$dbname` is blank.
+
+   Option A: create a local `config.php` file beside `db.php`:
+   ```php
+   <?php
+   $host = 'localhost';
+   $dbname = ''; // Leave blank to show all databases
+   $username = 'your_user';
+   $password = 'your_pass';
+   ```
+
+   Option B: edit the database configuration at the top of `db.php`:
    ```php
    // Database configuration
    $host = 'localhost';        // Your MySQL host
    $dbname = 'your_database';  // Your database name
    $username = 'your_user';    // Your MySQL username
    $password = 'your_pass';    // Your MySQL password
+   ```
+
+   To run without asking for any information, the configured MySQL user itself must have an empty password and database access.
+
+   You can also use environment variables:
+   ```bash
+   DB_HOST=localhost DB_NAME=your_database DB_USER=your_user DB_PASS=your_pass php -S localhost:8080
    ```
 
 3. **Set Permissions** (if needed)

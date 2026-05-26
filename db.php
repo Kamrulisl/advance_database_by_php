@@ -1,16 +1,208 @@
 <?php
-// Database configuration
+session_start();
+
+function h($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+function renderDatabaseConnectionPage($host, $dbname, $username, $error = '', $showForm = false) {
+    http_response_code($error ? 500 : 200);
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Database Connection</title>
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body class="bg-light">
+        <main class="container py-5" style="max-width: 760px;">
+            <?php if ($error): ?>
+                <div class="alert alert-danger">
+                    <h1 class="h4">Database connection failed</h1>
+                    <p class="mb-0"><?php echo h($error); ?></p>
+                </div>
+            <?php endif; ?>
+
+            <?php if ($showForm): ?>
+                <div class="card">
+                    <div class="card-body">
+                        <h2 class="h4 mb-3">Connect to MySQL</h2>
+                        <form method="post" autocomplete="off">
+                            <input type="hidden" name="db_connect" value="1">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="dbHost" class="form-label">Host</label>
+                                    <input type="text" class="form-control" id="dbHost" name="db_host" value="<?php echo h($host); ?>" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="dbName" class="form-label">Database Name</label>
+                                    <input type="text" class="form-control" id="dbName" name="db_name" value="<?php echo h($dbname); ?>">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="dbUser" class="form-label">Username</label>
+                                    <input type="text" class="form-control" id="dbUser" name="db_user" value="<?php echo h($username); ?>" required>
+                                </div>
+                                <div class="col-12">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="usePassword" onchange="togglePasswordField()">
+                                        <label class="form-check-label" for="usePassword">Use password</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6 d-none" id="passwordField">
+                                    <label for="dbPass" class="form-label">Password</label>
+                                    <input type="password" class="form-control" id="dbPass" name="db_pass" value="" disabled>
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-primary mt-4">Connect</button>
+                        </form>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <div class="card mt-3">
+                <div class="card-body">
+                    <h2 class="h5">No-login setup</h2>
+                    <p>This script automatically tries to connect with the configured MySQL user. To open it without asking for any information, MySQL must allow that user to log in without a password.</p>
+                    <pre class="bg-dark text-white p-3 rounded mb-0"><code>&lt;?php
 $host = 'localhost';
-$dbname = 'new';
+$dbname = ''; // Leave blank to show all databases
 $username = 'root';
-$password = '';
+$password = '';</code></pre>
+                </div>
+            </div>
+        </main>
+        <script>
+            function togglePasswordField() {
+                const usePassword = document.getElementById('usePassword');
+                const passwordField = document.getElementById('passwordField');
+                const passwordInput = document.getElementById('dbPass');
+
+                passwordField.classList.toggle('d-none', !usePassword.checked);
+                passwordInput.disabled = !usePassword.checked;
+                if (!usePassword.checked) {
+                    passwordInput.value = '';
+                }
+            }
+        </script>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+function renderDatabaseListPage($pdo, $host, $username) {
+    $databases = getAllDatabases($pdo);
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Select Database</title>
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.10.0/font/bootstrap-icons.min.css" rel="stylesheet">
+    </head>
+    <body class="bg-light">
+        <div class="container-fluid">
+            <div class="row bg-primary text-white py-3 mb-4">
+                <div class="col">
+                    <h1 class="h3 mb-0"><i class="bi bi-database"></i> Advanced SQL Database Manager</h1>
+                    <small>
+                        Connected to <?php echo h($host); ?> as <?php echo h($username); ?>
+                        <a href="?db_connection=1" class="link-light ms-2">Change connection</a>
+                    </small>
+                </div>
+            </div>
+
+            <main class="container pb-5">
+                <div class="d-flex align-items-center justify-content-between mb-3">
+                    <h2 class="h4 mb-0">Databases</h2>
+                    <span class="badge bg-secondary"><?php echo count($databases); ?> found</span>
+                </div>
+
+                <?php if (empty($databases)): ?>
+                    <div class="alert alert-info">No databases found for this MySQL user.</div>
+                <?php else: ?>
+                    <div class="list-group">
+                        <?php foreach ($databases as $database): ?>
+                            <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
+                               href="?database=<?php echo urlencode($database); ?>">
+                                <span><i class="bi bi-hdd-stack"></i> <?php echo h($database); ?></span>
+                                <i class="bi bi-chevron-right"></i>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+            </main>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+// Database configuration
+$host = getenv('DB_HOST') ?: 'localhost';
+$dbname = getenv('DB_NAME') ?: '';
+$username = getenv('DB_USER') ?: 'root';
+$password = getenv('DB_PASS') !== false ? getenv('DB_PASS') : '';
+
+if (file_exists(__DIR__ . '/config.php')) {
+    require __DIR__ . '/config.php';
+}
+
+if (isset($_GET['db_disconnect'])) {
+    unset($_SESSION['db_config']);
+    header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?'));
+    exit;
+}
+
+if (isset($_POST['db_connect'])) {
+    $_SESSION['db_config'] = [
+        'host' => trim($_POST['db_host'] ?? ''),
+        'dbname' => trim($_POST['db_name'] ?? ''),
+        'username' => trim($_POST['db_user'] ?? ''),
+        'password' => (string)($_POST['db_pass'] ?? ''),
+    ];
+}
+
+if (isset($_SESSION['db_config'])) {
+    $host = $_SESSION['db_config']['host'] ?: $host;
+    $dbname = $_SESSION['db_config']['dbname'] ?: $dbname;
+    $username = $_SESSION['db_config']['username'] ?: $username;
+    $password = $_SESSION['db_config']['password'];
+}
+
+if (isset($_GET['database'])) {
+    $dbname = trim($_GET['database']);
+    $_SESSION['db_config'] = [
+        'host' => $host,
+        'dbname' => $dbname,
+        'username' => $username,
+        'password' => $password,
+    ];
+}
+
+if (isset($_GET['db_connection'])) {
+    renderDatabaseConnectionPage($host, $dbname, $username, '', true);
+}
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
+    $dsn = "mysql:host=$host;charset=utf8mb4";
+    if ($dbname !== '') {
+        $dsn = "mysql:host=$host;dbname=$dbname;charset=utf8mb4";
+    }
+    $pdo = new PDO($dsn, $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 } catch(PDOException $e) {
-    die("Connection failed: " . $e->getMessage());
+    renderDatabaseConnectionPage($host, $dbname, $username, $e->getMessage());
+}
+
+if ($dbname === '') {
+    renderDatabaseListPage($pdo, $host, $username);
 }
 
 function jsonResponse($payload) {
@@ -339,6 +531,15 @@ if (isset($_GET['action']) && $_GET['action'] === 'view_raw_sql' && isset($_GET[
 }
 
 // Function to get all tables in database
+function getAllDatabases($pdo) {
+    try {
+        $stmt = $pdo->query("SHOW DATABASES");
+        return $stmt->fetchAll(PDO::FETCH_COLUMN);
+    } catch(PDOException $e) {
+        return [];
+    }
+}
+
 function getAllTables($pdo) {
     try {
         $stmt = $pdo->query("SHOW TABLES");
@@ -703,7 +904,9 @@ if ($currentTable) {
         <div class="row bg-primary text-white py-3 mb-4">
             <div class="col">
                 <h1 class="h3 mb-0"><i class="bi bi-database"></i> Advanced SQL Database Manager</h1>
-                <small>Complete database management with search, create, edit, and export functionality</small>
+                <small>
+                    Connected to <?php echo h($dbname); ?> as <?php echo h($username); ?>
+                    </small>
             </div>
         </div>
 
