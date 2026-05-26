@@ -6,16 +6,104 @@ $username = 'root';
 $password = '';
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname", $username, $password);
+    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 } catch(PDOException $e) {
     die("Connection failed: " . $e->getMessage());
+}
+
+function jsonResponse($payload) {
+    echo json_encode($payload);
+    exit;
+}
+
+function decodeJsonPostArray($key) {
+    if (!isset($_POST[$key])) {
+        return [];
+    }
+
+    if (is_array($_POST[$key])) {
+        return $_POST[$key];
+    }
+
+    $decoded = json_decode($_POST[$key], true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function isValidIdentifier($identifier) {
+    return is_string($identifier) && preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $identifier);
+}
+
+function quoteIdentifier($identifier) {
+    if (!is_string($identifier) || $identifier === '' || strpos($identifier, "\0") !== false) {
+        throw new InvalidArgumentException("Invalid identifier: " . (string)$identifier);
+    }
+
+    return "`" . str_replace('`', '``', $identifier) . "`";
+}
+
+function getAllowedColumnTypes() {
+    return ['VARCHAR', 'INT', 'TEXT', 'DATETIME', 'DATE', 'DECIMAL', 'BOOLEAN'];
+}
+
+function buildColumnDefinition($column) {
+    $name = $column['name'] ?? '';
+    $type = strtoupper($column['type'] ?? 'VARCHAR');
+    $length = trim((string)($column['length'] ?? ''));
+    $allowNull = ($column['null'] ?? 'YES') !== 'NO';
+    $default = (string)($column['default'] ?? '');
+    $autoIncrement = !empty($column['auto_increment']);
+    $primary = !empty($column['primary']);
+
+    if (!isValidIdentifier($name)) {
+        throw new InvalidArgumentException("Invalid column name: $name");
+    }
+
+    if (!in_array($type, getAllowedColumnTypes(), true)) {
+        throw new InvalidArgumentException("Invalid column type: $type");
+    }
+
+    if ($length !== '' && !preg_match('/^\d+(,\d+)?$/', $length)) {
+        throw new InvalidArgumentException("Invalid column length: $length");
+    }
+
+    $definition = quoteIdentifier($name) . " $type";
+    if ($length !== '' && !in_array($type, ['TEXT', 'DATE', 'DATETIME', 'BOOLEAN'], true)) {
+        $definition .= "($length)";
+    }
+    if (!$allowNull) {
+        $definition .= ' NOT NULL';
+    }
+    if ($default !== '') {
+        $definition .= " DEFAULT " . $GLOBALS['pdo']->quote($default);
+    }
+    if ($autoIncrement) {
+        $definition .= ' AUTO_INCREMENT';
+    }
+    if ($primary) {
+        $definition .= ' PRIMARY KEY';
+    }
+
+    return $definition;
+}
+
+function escapeSqlValue($pdo, $value) {
+    return $value === null ? 'NULL' : $pdo->quote($value);
+}
+
+function sqlExportIdentifier($identifier) {
+    return str_replace('`', '``', $identifier);
+}
+
+function downloadFilename($name) {
+    return preg_replace('/[^A-Za-z0-9_.-]/', '_', $name);
 }
 
 // Handle AJAX requests
 if (isset($_POST['action'])) {
     header('Content-Type: application/json');
-    
+
     switch ($_POST['action']) {
         case 'update_cell':
             $table = $_POST['table'];
@@ -23,98 +111,95 @@ if (isset($_POST['action'])) {
             $value = $_POST['value'];
             $id = $_POST['id'];
             $primaryKey = $_POST['primary_key'];
-            
+
             try {
-                $stmt = $pdo->prepare("UPDATE `$table` SET `$column` = ? WHERE `$primaryKey` = ?");
+                $stmt = $pdo->prepare("UPDATE " . quoteIdentifier($table) . " SET " . quoteIdentifier($column) . " = ? WHERE " . quoteIdentifier($primaryKey) . " = ?");
                 $stmt->execute([$value, $id]);
-                echo json_encode(['success' => true, 'message' => 'Cell updated successfully']);
-            } catch(PDOException $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                jsonResponse(['success' => true, 'message' => 'Cell updated successfully']);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
             }
-            exit;
-            
+
         case 'delete_row':
             $table = $_POST['table'];
             $id = $_POST['id'];
             $primaryKey = $_POST['primary_key'];
-            
+
             try {
-                $stmt = $pdo->prepare("DELETE FROM `$table` WHERE `$primaryKey` = ?");
+                $stmt = $pdo->prepare("DELETE FROM " . quoteIdentifier($table) . " WHERE " . quoteIdentifier($primaryKey) . " = ?");
                 $stmt->execute([$id]);
-                echo json_encode(['success' => true, 'message' => 'Row deleted successfully']);
-            } catch(PDOException $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                jsonResponse(['success' => true, 'message' => 'Row deleted successfully']);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
             }
-            exit;
-            
+
         case 'insert_row':
             $table = $_POST['table'];
-            $data = $_POST['data'];
-            
+            $data = decodeJsonPostArray('data');
+
             try {
+                if (empty($data)) {
+                    throw new InvalidArgumentException('No row data provided');
+                }
+
                 $columns = array_keys($data);
-                $columnList = '`' . implode('`, `', $columns) . '`';
+                $columnList = implode(', ', array_map('quoteIdentifier', $columns));
                 $placeholders = str_repeat('?,', count($columns) - 1) . '?';
-                
-                $stmt = $pdo->prepare("INSERT INTO `$table` ($columnList) VALUES ($placeholders)");
+
+                $stmt = $pdo->prepare("INSERT INTO " . quoteIdentifier($table) . " ($columnList) VALUES ($placeholders)");
                 $stmt->execute(array_values($data));
-                
-                echo json_encode(['success' => true, 'message' => 'Row inserted successfully', 'id' => $pdo->lastInsertId()]);
-            } catch(PDOException $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+
+                jsonResponse(['success' => true, 'message' => 'Row inserted successfully', 'id' => $pdo->lastInsertId()]);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
             }
-            exit;
 
         case 'create_table':
             $tableName = $_POST['table_name'];
-            $columns = $_POST['columns'];
-            
+            $columns = decodeJsonPostArray('columns');
+
             try {
-                $sql = "CREATE TABLE `$tableName` (";
-                $columnDefs = [];
-                
-                foreach ($columns as $col) {
-                    $colDef = "`{$col['name']}` {$col['type']}";
-                    if ($col['length']) $colDef .= "({$col['length']})";
-                    if ($col['null'] === 'NO') $colDef .= ' NOT NULL';
-                    if ($col['default']) $colDef .= " DEFAULT '{$col['default']}'";
-                    if ($col['auto_increment']) $colDef .= ' AUTO_INCREMENT';
-                    if ($col['primary']) $colDef .= ' PRIMARY KEY';
-                    $columnDefs[] = $colDef;
+                if (!isValidIdentifier($tableName)) {
+                    throw new InvalidArgumentException('Invalid table name');
                 }
-                
-                $sql .= implode(', ', $columnDefs) . ')';
+                if (empty($columns)) {
+                    throw new InvalidArgumentException('At least one column is required');
+                }
+
+                $columnDefs = [];
+                foreach ($columns as $col) {
+                    $columnDefs[] = buildColumnDefinition($col);
+                }
+
+                $sql = "CREATE TABLE " . quoteIdentifier($tableName) . " (" . implode(', ', $columnDefs) . ')';
                 $pdo->exec($sql);
-                
-                echo json_encode(['success' => true, 'message' => 'Table created successfully']);
-            } catch(PDOException $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+
+                jsonResponse(['success' => true, 'message' => 'Table created successfully']);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
             }
-            exit;
 
         case 'drop_table':
             $tableName = $_POST['table_name'];
-            
+
             try {
-                $stmt = $pdo->prepare("DROP TABLE `$tableName`");
+                $stmt = $pdo->prepare("DROP TABLE " . quoteIdentifier($tableName));
                 $stmt->execute();
-                echo json_encode(['success' => true, 'message' => 'Table dropped successfully']);
-            } catch(PDOException $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                jsonResponse(['success' => true, 'message' => 'Table dropped successfully']);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
             }
-            exit;
 
         case 'truncate_table':
             $tableName = $_POST['table_name'];
-            
+
             try {
-                $stmt = $pdo->prepare("TRUNCATE TABLE `$tableName`");
+                $stmt = $pdo->prepare("TRUNCATE TABLE " . quoteIdentifier($tableName));
                 $stmt->execute();
-                echo json_encode(['success' => true, 'message' => 'Table truncated successfully']);
-            } catch(PDOException $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                jsonResponse(['success' => true, 'message' => 'Table truncated successfully']);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
             }
-            exit;
 
         case 'add_column':
             $tableName = $_POST['table_name'];
@@ -123,60 +208,60 @@ if (isset($_POST['action'])) {
             $columnLength = $_POST['column_length'];
             $columnNull = $_POST['column_null'];
             $columnDefault = $_POST['column_default'];
-            
+
             try {
-                $sql = "ALTER TABLE `$tableName` ADD `$columnName` $columnType";
-                if ($columnLength) $sql .= "($columnLength)";
-                if ($columnNull === 'NO') $sql .= ' NOT NULL';
-                if ($columnDefault) $sql .= " DEFAULT '$columnDefault'";
-                
+                $sql = "ALTER TABLE " . quoteIdentifier($tableName) . " ADD " . buildColumnDefinition([
+                    'name' => $columnName,
+                    'type' => $columnType,
+                    'length' => $columnLength,
+                    'null' => $columnNull,
+                    'default' => $columnDefault,
+                ]);
+
                 $pdo->exec($sql);
-                echo json_encode(['success' => true, 'message' => 'Column added successfully']);
-            } catch(PDOException $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                jsonResponse(['success' => true, 'message' => 'Column added successfully']);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
             }
-            exit;
 
         case 'drop_column':
             $tableName = $_POST['table_name'];
             $columnName = $_POST['column_name'];
-            
+
             try {
-                $sql = "ALTER TABLE `$tableName` DROP COLUMN `$columnName`";
+                $sql = "ALTER TABLE " . quoteIdentifier($tableName) . " DROP COLUMN " . quoteIdentifier($columnName);
                 $pdo->exec($sql);
-                echo json_encode(['success' => true, 'message' => 'Column dropped successfully']);
-            } catch(PDOException $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                jsonResponse(['success' => true, 'message' => 'Column dropped successfully']);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
             }
-            exit;
 
         case 'execute_query':
             $query = $_POST['query'];
-            
+
             try {
                 $stmt = $pdo->prepare($query);
                 $stmt->execute();
-                
+
                 if (stripos($query, 'SELECT') === 0) {
                     $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                    echo json_encode(['success' => true, 'data' => $result, 'message' => 'Query executed successfully']);
+                    jsonResponse(['success' => true, 'data' => $result, 'message' => 'Query executed successfully']);
                 } else {
                     $affected = $stmt->rowCount();
-                    echo json_encode(['success' => true, 'affected_rows' => $affected, 'message' => 'Query executed successfully']);
+                    jsonResponse(['success' => true, 'affected_rows' => $affected, 'message' => 'Query executed successfully']);
                 }
-            } catch(PDOException $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
             }
-            exit;
 
         case 'search_table':
             $tableName = $_POST['table_name'];
             $searchTerm = $_POST['search_term'];
             $searchColumn = $_POST['search_column'] ?? '';
-            
+
             try {
                 if ($searchColumn && $searchColumn !== 'all') {
-                    $sql = "SELECT * FROM `$tableName` WHERE `$searchColumn` LIKE ?";
+                    $sql = "SELECT * FROM " . quoteIdentifier($tableName) . " WHERE " . quoteIdentifier($searchColumn) . " LIKE ?";
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute(["%$searchTerm%"]);
                 } else {
@@ -184,33 +269,55 @@ if (isset($_POST['action'])) {
                     $columns = getTableColumns($pdo, $tableName);
                     $conditions = [];
                     foreach ($columns as $col) {
-                        $conditions[] = "`{$col['Field']}` LIKE ?";
+                        $conditions[] = quoteIdentifier($col['Field']) . " LIKE ?";
                     }
-                    $sql = "SELECT * FROM `$tableName` WHERE " . implode(' OR ', $conditions);
+                    $sql = "SELECT * FROM " . quoteIdentifier($tableName) . " WHERE " . implode(' OR ', $conditions);
                     $stmt = $pdo->prepare($sql);
                     $params = array_fill(0, count($columns), "%$searchTerm%");
                     $stmt->execute($params);
                 }
-                
+
                 $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                echo json_encode(['success' => true, 'data' => $results, 'count' => count($results)]);
-            } catch(PDOException $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                jsonResponse(['success' => true, 'data' => $results, 'count' => count($results)]);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
             }
-            exit;
+
+        case 'get_table_structure':
+            $tableName = $_POST['table_name'];
+
+            try {
+                $columns = getTableColumns($pdo, $tableName);
+                $html = '<div class="table-responsive"><table class="table table-sm table-striped">';
+                $html .= '<thead class="table-dark"><tr><th>Field</th><th>Type</th><th>Null</th><th>Key</th><th>Default</th><th>Extra</th></tr></thead><tbody>';
+                foreach ($columns as $column) {
+                    $html .= '<tr>';
+                    foreach (['Field', 'Type', 'Null', 'Key', 'Default', 'Extra'] as $key) {
+                        $html .= '<td>' . htmlspecialchars((string)($column[$key] ?? ''), ENT_QUOTES, 'UTF-8') . '</td>';
+                    }
+                    $html .= '</tr>';
+                }
+                $html .= '</tbody></table></div>';
+                jsonResponse(['success' => true, 'html' => $html]);
+            } catch(Exception $e) {
+                jsonResponse(['success' => false, 'message' => $e->getMessage()]);
+            }
+
+        default:
+            jsonResponse(['success' => false, 'message' => 'Unknown action']);
     }
 }
 
 // Handle download requests
 if (isset($_POST['download'])) {
     $downloadType = $_POST['download_type'];
-    
+
     if ($downloadType === 'all_tables') {
         downloadAllTables($pdo);
     } elseif ($downloadType === 'single_table') {
         $tableName = $_POST['table_name'];
         $exportType = $_POST['export_type'] ?? 'all';
-        
+
         if ($exportType === 'all') {
             downloadAllData($pdo, $tableName);
         } elseif ($exportType === 'selected' && isset($_POST['selected_ids'])) {
@@ -224,9 +331,9 @@ if (isset($_POST['download'])) {
 if (isset($_GET['action']) && $_GET['action'] === 'view_raw_sql' && isset($_GET['table'])) {
     $tableName = $_GET['table'];
     $rawSQL = generateRawSQL($pdo, $tableName);
-    
+
     header('Content-Type: text/plain; charset=utf-8');
-    header('Content-Disposition: inline; filename="' . $tableName . '_raw.sql"');
+    header('Content-Disposition: inline; filename="' . downloadFilename($tableName) . '_raw.sql"');
     echo $rawSQL;
     exit;
 }
@@ -245,10 +352,10 @@ function getAllTables($pdo) {
 // Function to get table columns
 function getTableColumns($pdo, $tableName) {
     try {
-        $stmt = $pdo->prepare("DESCRIBE `$tableName`");
+        $stmt = $pdo->prepare("DESCRIBE " . quoteIdentifier($tableName));
         $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch(PDOException $e) {
+    } catch(Exception $e) {
         return [];
     }
 }
@@ -256,20 +363,20 @@ function getTableColumns($pdo, $tableName) {
 // Function to get table info
 function getTableInfo($pdo, $tableName) {
     try {
-        $stmt = $pdo->prepare("SELECT COUNT(*) as row_count FROM `$tableName`");
+        $stmt = $pdo->prepare("SELECT COUNT(*) as row_count FROM " . quoteIdentifier($tableName));
         $stmt->execute();
         $count = $stmt->fetchColumn();
-        
-        $stmt = $pdo->prepare("DESCRIBE `$tableName`");
+
+        $stmt = $pdo->prepare("DESCRIBE " . quoteIdentifier($tableName));
         $stmt->execute();
         $columns = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
         return [
             'row_count' => $count,
             'column_count' => count($columns),
             'columns' => $columns
         ];
-    } catch(PDOException $e) {
+    } catch(Exception $e) {
         return ['row_count' => 0, 'column_count' => 0, 'columns' => []];
     }
 }
@@ -277,11 +384,11 @@ function getTableInfo($pdo, $tableName) {
 // Function to get primary key of table
 function getPrimaryKey($pdo, $tableName) {
     try {
-        $stmt = $pdo->prepare("SHOW KEYS FROM `$tableName` WHERE Key_name = 'PRIMARY'");
+        $stmt = $pdo->prepare("SHOW KEYS FROM " . quoteIdentifier($tableName) . " WHERE Key_name = 'PRIMARY'");
         $stmt->execute();
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         return $result ? $result['Column_name'] : 'id';
-    } catch(PDOException $e) {
+    } catch(Exception $e) {
         return 'id';
     }
 }
@@ -289,39 +396,40 @@ function getPrimaryKey($pdo, $tableName) {
 // Function to generate raw SQL for a table
 function generateRawSQL($pdo, $tableName) {
     try {
+        $quotedTable = quoteIdentifier($tableName);
+        $exportTable = sqlExportIdentifier($tableName);
         $sqlContent = "-- Raw SQL Export for table: $tableName\n";
         $sqlContent .= "-- Generated on: " . date('Y-m-d H:i:s') . "\n\n";
-        
+
         // Get table structure
-        $stmt = $pdo->prepare("SHOW CREATE TABLE `$tableName`");
+        $stmt = $pdo->prepare("SHOW CREATE TABLE $quotedTable");
         $stmt->execute();
         $createTable = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        $sqlContent .= "-- Table structure for table `$tableName`\n";
-        $sqlContent .= "DROP TABLE IF EXISTS `$tableName`;\n";
+
+        $sqlContent .= "-- Table structure for table `$exportTable`\n";
+        $sqlContent .= "DROP TABLE IF EXISTS `$exportTable`;\n";
         $sqlContent .= $createTable['Create Table'] . ";\n\n";
-        
+
         // Get all data
-        $stmt = $pdo->prepare("SELECT * FROM `$tableName`");
+        $stmt = $pdo->prepare("SELECT * FROM $quotedTable");
         $stmt->execute();
         $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
         if (!empty($data)) {
             $columns = array_keys($data[0]);
-            $columnList = '`' . implode('`, `', $columns) . '`';
-            
-            $sqlContent .= "-- Dumping data for table `$tableName`\n";
-            $sqlContent .= "LOCK TABLES `$tableName` WRITE;\n";
-            $sqlContent .= "INSERT INTO `$tableName` ($columnList) VALUES\n";
-            
+            $columnList = '`' . implode('`, `', array_map('sqlExportIdentifier', $columns)) . '`';
+
+            $sqlContent .= "-- Dumping data for table `$exportTable`\n";
+            $sqlContent .= "LOCK TABLES `$exportTable` WRITE;\n";
+            $sqlContent .= "INSERT INTO `$exportTable` ($columnList) VALUES\n";
+
             foreach ($data as $index => $row) {
-                $values = array_map(function($value) {
-                    if ($value === null) return 'NULL';
-                    return "'" . addslashes($value) . "'";
+                $values = array_map(function($value) use ($pdo) {
+                    return escapeSqlValue($pdo, $value);
                 }, array_values($row));
-                
+
                 $sqlContent .= "(" . implode(', ', $values) . ")";
-                
+
                 if ($index < count($data) - 1) {
                     $sqlContent .= ",\n";
                 } else {
@@ -330,9 +438,9 @@ function generateRawSQL($pdo, $tableName) {
             }
             $sqlContent .= "UNLOCK TABLES;\n\n";
         }
-        
+
         return $sqlContent;
-    } catch(PDOException $e) {
+    } catch(Exception $e) {
         return "-- Error generating SQL for table $tableName: " . $e->getMessage();
     }
 }
@@ -341,25 +449,25 @@ function generateRawSQL($pdo, $tableName) {
 function downloadAllTables($pdo) {
     try {
         $tables = getAllTables($pdo);
-        
+
         $sqlContent = "-- Full Database Export\n";
         $sqlContent .= "-- Generated on: " . date('Y-m-d H:i:s') . "\n";
         $sqlContent .= "-- Total tables: " . count($tables) . "\n\n";
         $sqlContent .= "SET SQL_MODE = \"NO_AUTO_VALUE_ON_ZERO\";\n";
         $sqlContent .= "START TRANSACTION;\n";
         $sqlContent .= "SET time_zone = \"+00:00\";\n\n";
-        
+
         foreach ($tables as $tableName) {
             $sqlContent .= generateRawSQL($pdo, $tableName);
             $sqlContent .= "\n" . str_repeat("-", 50) . "\n\n";
         }
-        
+
         $sqlContent .= "COMMIT;\n";
-        
+
         header('Content-Type: application/sql');
         header('Content-Disposition: attachment; filename="full_database_export_' . date('Y-m-d_H-i-s') . '.sql"');
         header('Content-Length: ' . strlen($sqlContent));
-        
+
         echo $sqlContent;
     } catch(Exception $e) {
         die("Error generating full database export: " . $e->getMessage());
@@ -369,57 +477,62 @@ function downloadAllTables($pdo) {
 // Function to download all data from single table
 function downloadAllData($pdo, $tableName) {
     $sqlContent = generateRawSQL($pdo, $tableName);
-    
+
     header('Content-Type: application/sql');
-    header('Content-Disposition: attachment; filename="' . $tableName . '_complete_' . date('Y-m-d_H-i-s') . '.sql"');
+    header('Content-Disposition: attachment; filename="' . downloadFilename($tableName) . '_complete_' . date('Y-m-d_H-i-s') . '.sql"');
     header('Content-Length: ' . strlen($sqlContent));
-    
+
     echo $sqlContent;
 }
 
 // Function to download selected data
 function downloadSelectedData($pdo, $tableName, $selectedIds) {
     try {
+        if (empty($selectedIds) || !is_array($selectedIds)) {
+            die("No records selected");
+        }
+
         $placeholders = str_repeat('?,', count($selectedIds) - 1) . '?';
         $primaryKey = getPrimaryKey($pdo, $tableName);
-        $stmt = $pdo->prepare("SELECT * FROM `$tableName` WHERE `$primaryKey` IN ($placeholders)");
+        $quotedTable = quoteIdentifier($tableName);
+        $exportTable = sqlExportIdentifier($tableName);
+        $stmt = $pdo->prepare("SELECT * FROM $quotedTable WHERE " . quoteIdentifier($primaryKey) . " IN ($placeholders)");
         $stmt->execute($selectedIds);
         $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
         if (empty($data)) {
             die("No data found for selected records");
         }
-        
+
         $sqlContent = "-- Selected data export for table: $tableName\n";
         $sqlContent .= "-- Generated on: " . date('Y-m-d H:i:s') . "\n";
         $sqlContent .= "-- Selected records: " . count($data) . "\n\n";
-        
+
         $columns = array_keys($data[0]);
-        $columnList = '`' . implode('`, `', $columns) . '`';
-        
-        $sqlContent .= "INSERT INTO `$tableName` ($columnList) VALUES\n";
-        
+        $columnList = '`' . implode('`, `', array_map('sqlExportIdentifier', $columns)) . '`';
+
+        $sqlContent .= "INSERT INTO `$exportTable` ($columnList) VALUES\n";
+
         foreach ($data as $index => $row) {
-            $values = array_map(function($value) {
-                if ($value === null) return 'NULL';
-                return "'" . addslashes($value) . "'";
+            $values = array_map(function($value) use ($pdo) {
+                return escapeSqlValue($pdo, $value);
             }, array_values($row));
-            
+
             $sqlContent .= "(" . implode(', ', $values) . ")";
-            
+
             if ($index < count($data) - 1) {
                 $sqlContent .= ",\n";
             } else {
                 $sqlContent .= ";\n";
             }
         }
-        
+
         header('Content-Type: application/sql');
-        header('Content-Disposition: attachment; filename="' . $tableName . '_selected_' . date('Y-m-d_H-i-s') . '.sql"');
+        header('Content-Disposition: attachment; filename="' . downloadFilename($tableName) . '_selected_' . date('Y-m-d_H-i-s') . '.sql"');
         header('Content-Length: ' . strlen($sqlContent));
-        
+
         echo $sqlContent;
-    } catch(PDOException $e) {
+    } catch(Exception $e) {
         die("Error: " . $e->getMessage());
     }
 }
@@ -429,11 +542,16 @@ $allTables = getAllTables($pdo);
 
 // Get current table data
 $currentTable = $_GET['table'] ?? ($allTables[0] ?? '');
-$page = (int)($_GET['page'] ?? 1);
+$page = max(1, (int)($_GET['page'] ?? 1));
 $limit = 20;
 $offset = ($page - 1) * $limit;
 $search = $_GET['search'] ?? '';
 $searchColumn = $_GET['search_column'] ?? 'all';
+
+if ($currentTable && !in_array($currentTable, $allTables, true)) {
+    $error = 'Unknown table selected.';
+    $currentTable = $allTables[0] ?? '';
+}
 
 $data = [];
 $columns = [];
@@ -446,38 +564,42 @@ if ($currentTable) {
     try {
         // Get primary key
         $primaryKey = getPrimaryKey($pdo, $currentTable);
-        
+
         // Get column information
-        $stmt = $pdo->prepare("DESCRIBE `$currentTable`");
+        $stmt = $pdo->prepare("DESCRIBE " . quoteIdentifier($currentTable));
         $stmt->execute();
         $columnInfo = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+        $validColumns = array_column($columnInfo, 'Field');
+        if ($searchColumn !== 'all' && !in_array($searchColumn, $validColumns, true)) {
+            $searchColumn = 'all';
+        }
+
         // Build search query
         $whereClause = '';
         $params = [];
-        
+
         if ($search) {
             if ($searchColumn && $searchColumn !== 'all') {
-                $whereClause = "WHERE `$searchColumn` LIKE ?";
+                $whereClause = "WHERE " . quoteIdentifier($searchColumn) . " LIKE ?";
                 $params[] = "%$search%";
             } else {
                 $conditions = [];
                 foreach ($columnInfo as $col) {
-                    $conditions[] = "`{$col['Field']}` LIKE ?";
+                    $conditions[] = quoteIdentifier($col['Field']) . " LIKE ?";
                     $params[] = "%$search%";
                 }
                 $whereClause = "WHERE " . implode(' OR ', $conditions);
             }
         }
-        
+
         // Get total count
-        $countStmt = $pdo->prepare("SELECT COUNT(*) FROM `$currentTable` $whereClause");
+        $countStmt = $pdo->prepare("SELECT COUNT(*) FROM " . quoteIdentifier($currentTable) . " $whereClause");
         $countStmt->execute($params);
         $totalRecords = $countStmt->fetchColumn();
         $totalPages = ceil($totalRecords / $limit);
-        
+
         // Get data for current page
-        $stmt = $pdo->prepare("SELECT * FROM `$currentTable` $whereClause LIMIT :limit OFFSET :offset");
+        $stmt = $pdo->prepare("SELECT * FROM " . quoteIdentifier($currentTable) . " $whereClause LIMIT :limit OFFSET :offset");
         foreach ($params as $index => $param) {
             $stmt->bindValue($index + 1, $param);
         }
@@ -485,11 +607,11 @@ if ($currentTable) {
         $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
         $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
         // Get column names
         $columns = !empty($data) ? array_keys($data[0]) : array_column($columnInfo, 'Field');
-        
-    } catch(PDOException $e) {
+
+    } catch(Exception $e) {
         $error = "Error: " . $e->getMessage();
     }
 }
@@ -630,32 +752,32 @@ if ($currentTable) {
                     <div class="card-body p-0 table-sidebar">
                         <?php foreach ($allTables as $table): ?>
                             <?php $tableInfo = getTableInfo($pdo, $table); ?>
-                            <div class="table-item p-3 border-bottom <?php echo ($table === $currentTable) ? 'active' : ''; ?>" 
-                                 onclick="loadTable('<?php echo htmlspecialchars($table); ?>')">
+                            <div class="table-item p-3 border-bottom <?php echo ($table === $currentTable) ? 'active' : ''; ?>"
+                                 onclick="loadTable(<?php echo htmlspecialchars(json_encode($table), ENT_QUOTES, 'UTF-8'); ?>)">
                                 <div class="d-flex justify-content-between align-items-center">
                                     <div>
                                         <div class="fw-bold"><?php echo htmlspecialchars($table); ?></div>
                                         <small class="text-muted">
-                                            <i class="bi bi-table"></i> <?php echo number_format($tableInfo['row_count']); ?> rows, 
+                                            <i class="bi bi-table"></i> <?php echo number_format($tableInfo['row_count']); ?> rows,
                                             <?php echo $tableInfo['column_count']; ?> columns
                                         </small>
                                     </div>
-                                    <div class="dropdown">
+                                    <div class="dropdown" onclick="event.stopPropagation()">
                                         <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="dropdown">
                                             <i class="bi bi-three-dots-vertical"></i>
                                         </button>
                                         <ul class="dropdown-menu">
-                                            <li><a class="dropdown-item" href="#" onclick="showTableStructure('<?php echo htmlspecialchars($table); ?>')">
+                                            <li><a class="dropdown-item" href="#" onclick="showTableStructure(<?php echo htmlspecialchars(json_encode($table), ENT_QUOTES, 'UTF-8'); ?>)">
                                                 <i class="bi bi-info-circle"></i> Table Structure
                                             </a></li>
-                                            <li><a class="dropdown-item" href="#" onclick="addColumn('<?php echo htmlspecialchars($table); ?>')">
+                                            <li><a class="dropdown-item" href="#" onclick="openAddColumnModal(<?php echo htmlspecialchars(json_encode($table), ENT_QUOTES, 'UTF-8'); ?>)">
                                                 <i class="bi bi-plus"></i> Add Column
                                             </a></li>
-                                            <li><a class="dropdown-item" href="#" onclick="truncateTable('<?php echo htmlspecialchars($table); ?>')">
+                                            <li><a class="dropdown-item" href="#" onclick="truncateTable(<?php echo htmlspecialchars(json_encode($table), ENT_QUOTES, 'UTF-8'); ?>)">
                                                 <i class="bi bi-trash"></i> Truncate Table
                                             </a></li>
                                             <li><hr class="dropdown-divider"></li>
-                                            <li><a class="dropdown-item text-danger" href="#" onclick="dropTable('<?php echo htmlspecialchars($table); ?>')">
+                                            <li><a class="dropdown-item text-danger" href="#" onclick="dropTable(<?php echo htmlspecialchars(json_encode($table), ENT_QUOTES, 'UTF-8'); ?>)">
                                                 <i class="bi bi-x-circle"></i> Drop Table
                                             </a></li>
                                         </ul>
@@ -682,7 +804,7 @@ if ($currentTable) {
                             <div class="col-md-6">
                                 <div class="input-group">
                                     <span class="input-group-text"><i class="bi bi-search"></i></span>
-                                    <input type="text" class="form-control" id="searchInput" 
+                                    <input type="text" class="form-control" id="searchInput"
                                            placeholder="Search in table..." value="<?php echo htmlspecialchars($search); ?>">
                                 </div>
                             </div>
@@ -690,7 +812,7 @@ if ($currentTable) {
                                 <select class="form-select" id="searchColumn">
                                     <option value="all" <?php echo ($searchColumn === 'all') ? 'selected' : ''; ?>>All Columns</option>
                                     <?php foreach ($columns as $column): ?>
-                                        <option value="<?php echo htmlspecialchars($column); ?>" 
+                                        <option value="<?php echo htmlspecialchars($column); ?>"
                                                 <?php echo ($searchColumn === $column) ? 'selected' : ''; ?>>
                                             <?php echo htmlspecialchars($column); ?>
                                         </option>
@@ -731,7 +853,7 @@ if ($currentTable) {
                                     </button>
                                 </div>
                                 <div class="col-auto">
-                                    <a href="?action=view_raw_sql&table=<?php echo urlencode($currentTable); ?>" 
+                                    <a href="?action=view_raw_sql&table=<?php echo urlencode($currentTable); ?>"
                                        target="_blank" class="btn btn-info btn-sm">
                                         <i class="bi bi-eye"></i> View Raw SQL
                                     </a>
@@ -742,7 +864,7 @@ if ($currentTable) {
                                     </button>
                                 </div>
                                 <div class="col-auto">
-                                    <button type="button" onclick="showTableStructure('<?php echo htmlspecialchars($currentTable); ?>')" class="btn btn-secondary btn-sm">
+                                    <button type="button" onclick="showTableStructure(<?php echo htmlspecialchars(json_encode($currentTable), ENT_QUOTES, 'UTF-8'); ?>)" class="btn btn-secondary btn-sm">
                                         <i class="bi bi-info-circle"></i> Structure
                                     </button>
                                 </div>
@@ -756,11 +878,11 @@ if ($currentTable) {
                     <?php if (!empty($data) || !empty($columns)): ?>
                         <?php if ($totalRecords > 0): ?>
                             <div class="alert alert-info" role="alert">
-                                <i class="bi bi-info-circle"></i> 
+                                <i class="bi bi-info-circle"></i>
                                 <?php if ($search): ?>
                                     Found <?php echo count($data); ?> of <?php echo number_format($totalRecords); ?> matching records
                                 <?php else: ?>
-                                    Showing <?php echo count($data); ?> of <?php echo number_format($totalRecords); ?> records 
+                                    Showing <?php echo count($data); ?> of <?php echo number_format($totalRecords); ?> records
                                     (Page <?php echo $page; ?> of <?php echo $totalPages; ?>)
                                 <?php endif; ?>
                             </div>
@@ -783,7 +905,7 @@ if ($currentTable) {
                                                                 <i class="bi bi-three-dots"></i>
                                                             </button>
                                                             <ul class="dropdown-menu">
-                                                                <li><a class="dropdown-item" href="#" onclick="dropColumn('<?php echo htmlspecialchars($currentTable); ?>', '<?php echo htmlspecialchars($column); ?>')">
+                                                                <li><a class="dropdown-item" href="#" onclick="dropColumn(<?php echo htmlspecialchars(json_encode($currentTable), ENT_QUOTES, 'UTF-8'); ?>, <?php echo htmlspecialchars(json_encode($column), ENT_QUOTES, 'UTF-8'); ?>)">
                                                                     <i class="bi bi-trash"></i> Drop Column
                                                                 </a></li>
                                                             </ul>
@@ -802,7 +924,7 @@ if ($currentTable) {
                                                     </button>
                                                 </td>
                                                 <?php foreach ($columns as $column): ?>
-                                                    <?php 
+                                                    <?php
                                                     $colInfo = array_filter($columnInfo, function($col) use ($column) {
                                                         return $col['Field'] === $column;
                                                     });
@@ -811,12 +933,12 @@ if ($currentTable) {
                                                     ?>
                                                     <td>
                                                         <?php if ($isAutoIncrement): ?>
-                                                            <input type="text" class="form-control form-control-sm insert-input" 
-                                                                   data-column="<?php echo htmlspecialchars($column); ?>" 
+                                                            <input type="text" class="form-control form-control-sm insert-input"
+                                                                   data-column="<?php echo htmlspecialchars($column); ?>"
                                                                    placeholder="AUTO" readonly>
                                                         <?php else: ?>
-                                                            <input type="text" class="form-control form-control-sm insert-input" 
-                                                                   data-column="<?php echo htmlspecialchars($column); ?>" 
+                                                            <input type="text" class="form-control form-control-sm insert-input"
+                                                                   data-column="<?php echo htmlspecialchars($column); ?>"
                                                                    placeholder="Enter <?php echo htmlspecialchars($column); ?>">
                                                         <?php endif; ?>
                                                     </td>
@@ -832,12 +954,12 @@ if ($currentTable) {
                                             <?php foreach ($data as $row): ?>
                                                 <tr data-id="<?php echo htmlspecialchars($row[$primaryKey] ?? ''); ?>">
                                                     <td>
-                                                        <input type="checkbox" class="form-check-input row-checkbox" 
-                                                               value="<?php echo htmlspecialchars($row[$primaryKey] ?? ''); ?>" 
+                                                        <input type="checkbox" class="form-check-input row-checkbox"
+                                                               value="<?php echo htmlspecialchars($row[$primaryKey] ?? ''); ?>"
                                                                onchange="updateSelectedCount()">
                                                     </td>
                                                     <?php foreach ($columns as $column): ?>
-                                                        <td class="editable-cell" 
+                                                        <td class="editable-cell"
                                                             data-column="<?php echo htmlspecialchars($column); ?>"
                                                             data-id="<?php echo htmlspecialchars($row[$primaryKey] ?? ''); ?>"
                                                             onclick="editCell(this)">
@@ -845,7 +967,7 @@ if ($currentTable) {
                                                         </td>
                                                     <?php endforeach; ?>
                                                     <td class="action-buttons">
-                                                        <button type="button" onclick="deleteRow('<?php echo htmlspecialchars($row[$primaryKey] ?? ''); ?>')" 
+                                                        <button type="button" onclick="deleteRow(<?php echo htmlspecialchars(json_encode((string)($row[$primaryKey] ?? '')), ENT_QUOTES, 'UTF-8'); ?>)"
                                                                 class="btn btn-danger btn-sm">
                                                             <i class="bi bi-trash"></i>
                                                         </button>
@@ -867,7 +989,7 @@ if ($currentTable) {
                                             <a class="page-link" href="?table=<?php echo urlencode($currentTable); ?>&page=<?php echo ($page - 1); ?>">Previous</a>
                                         </li>
                                     <?php endif; ?>
-                                    
+
                                     <?php for ($i = max(1, $page - 2); $i <= min($totalPages, $page + 2); $i++): ?>
                                         <li class="page-item <?php echo ($i == $page) ? 'active' : ''; ?>">
                                             <a class="page-link" href="?table=<?php echo urlencode($currentTable); ?>&page=<?php echo $i; ?>">
@@ -875,7 +997,7 @@ if ($currentTable) {
                                             </a>
                                         </li>
                                     <?php endfor; ?>
-                                    
+
                                     <?php if ($page < $totalPages): ?>
                                         <li class="page-item">
                                             <a class="page-link" href="?table=<?php echo urlencode($currentTable); ?>&page=<?php echo ($page + 1); ?>">Next</a>
@@ -954,7 +1076,7 @@ if ($currentTable) {
                                 </div>
                             </div>
                         </div>
-                        <button type="button" class="btn btn-secondary btn-sm" onclick="addColumn()">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="addColumnToForm()">
                             <i class="bi bi-plus"></i> Add Column
                         </button>
                     </form>
@@ -1065,8 +1187,26 @@ if ($currentTable) {
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
     <script>
-        const currentTable = '<?php echo htmlspecialchars($currentTable); ?>';
-        const primaryKey = '<?php echo htmlspecialchars($primaryKey); ?>';
+        const currentTable = <?php echo json_encode($currentTable); ?>;
+        const primaryKey = <?php echo json_encode($primaryKey); ?>;
+
+        function postForm(params) {
+            return fetch('', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams(params).toString()
+            });
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, char => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            }[char]));
+        }
 
         function loadTable(tableName) {
             window.location.href = '?table=' + encodeURIComponent(tableName);
@@ -1075,31 +1215,34 @@ if ($currentTable) {
         function performSearch() {
             const searchTerm = document.getElementById('searchInput').value;
             const searchColumn = document.getElementById('searchColumn').value;
-            
+
             let url = '?table=' + encodeURIComponent(currentTable);
             if (searchTerm) {
                 url += '&search=' + encodeURIComponent(searchTerm);
                 url += '&search_column=' + encodeURIComponent(searchColumn);
             }
-            
+
             window.location.href = url;
         }
 
         // Search on Enter key
-        document.getElementById('searchInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                performSearch();
-            }
-        });
+        const searchInput = document.getElementById('searchInput');
+        if (searchInput) {
+            searchInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    performSearch();
+                }
+            });
+        }
 
         function toggleAll() {
             const selectAll = document.getElementById('select-all');
             const checkboxes = document.querySelectorAll('.row-checkbox');
-            
+
             checkboxes.forEach(checkbox => {
                 checkbox.checked = selectAll.checked;
             });
-            
+
             updateSelectedCount();
         }
 
@@ -1107,7 +1250,8 @@ if ($currentTable) {
             const checkedBoxes = document.querySelectorAll('.row-checkbox:checked');
             const count = checkedBoxes.length;
             const countElement = document.getElementById('selected-count');
-            
+            if (!countElement) return;
+
             if (count > 0) {
                 countElement.textContent = count + ' selected';
                 countElement.classList.remove('d-none');
@@ -1118,27 +1262,30 @@ if ($currentTable) {
 
         function editCell(cell) {
             if (cell.querySelector('.cell-input')) return;
-            
+
             const originalValue = cell.textContent;
             const input = document.createElement('input');
             input.type = 'text';
             input.className = 'cell-input form-control form-control-sm';
             input.value = originalValue;
-            
+
             cell.innerHTML = '';
             cell.appendChild(input);
             input.focus();
             input.select();
-            
+
             const saveEdit = () => {
                 const newValue = input.value;
                 const column = cell.dataset.column;
                 const id = cell.dataset.id;
-                
-                fetch('', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: `action=update_cell&table=${currentTable}&column=${column}&value=${encodeURIComponent(newValue)}&id=${id}&primary_key=${primaryKey}`
+
+                postForm({
+                    action: 'update_cell',
+                    table: currentTable,
+                    column: column,
+                    value: newValue,
+                    id: id,
+                    primary_key: primaryKey
                 })
                 .then(response => response.json())
                 .then(data => {
@@ -1155,11 +1302,11 @@ if ($currentTable) {
                     showToast('Error updating cell', 'error');
                 });
             };
-            
+
             const cancelEdit = () => {
                 cell.textContent = originalValue;
             };
-            
+
             input.addEventListener('blur', saveEdit);
             input.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') saveEdit();
@@ -1169,11 +1316,12 @@ if ($currentTable) {
 
         function deleteRow(id) {
             if (!confirm('Are you sure you want to delete this row?')) return;
-            
-            fetch('', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `action=delete_row&table=${currentTable}&id=${id}&primary_key=${primaryKey}`
+
+            postForm({
+                action: 'delete_row',
+                table: currentTable,
+                id: id,
+                primary_key: primaryKey
             })
             .then(response => response.json())
             .then(data => {
@@ -1193,7 +1341,7 @@ if ($currentTable) {
         function toggleInsertRow() {
             const insertRow = document.getElementById('insert-row');
             const toggleBtn = document.getElementById('insertToggleBtn');
-            
+
             if (insertRow.classList.contains('d-none')) {
                 insertRow.classList.remove('d-none');
                 toggleBtn.innerHTML = '<i class="bi bi-x-circle"></i> Cancel Add';
@@ -1220,7 +1368,7 @@ if ($currentTable) {
             const inputs = document.querySelectorAll('.insert-input:not([readonly])');
             const data = {};
             let hasData = false;
-            
+
             inputs.forEach(input => {
                 const column = input.dataset.column;
                 const value = input.value.trim();
@@ -1229,16 +1377,16 @@ if ($currentTable) {
                     hasData = true;
                 }
             });
-            
+
             if (!hasData) {
                 showToast('Please enter at least one value', 'warning');
                 return;
             }
-            
-            fetch('', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `action=insert_row&table=${currentTable}&data=${encodeURIComponent(JSON.stringify(data))}`
+
+            postForm({
+                action: 'insert_row',
+                table: currentTable,
+                data: JSON.stringify(data)
             })
             .then(response => response.json())
             .then(result => {
@@ -1288,9 +1436,15 @@ if ($currentTable) {
                     <input type="text" class="form-control" placeholder="Default" name="column_default[]">
                 </div>
                 <div class="col-md-1">
-                    <button type="button" class="btn btn-danger btn-sm" onclick="removeColumnRow(this)">
-                        <i class="bi bi-trash"></i>
-                    </button>
+                    <div class="d-flex gap-1 align-items-center">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="column_primary[]" title="Primary Key">
+                            <label class="form-check-label">PK</label>
+                        </div>
+                        <button type="button" class="btn btn-danger btn-sm" onclick="removeColumnRow(this)">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
                 </div>
             `;
             container.appendChild(newRow);
@@ -1304,7 +1458,7 @@ if ($currentTable) {
             const tableName = document.getElementById('tableName').value;
             const columnRows = document.querySelectorAll('.column-row');
             const columns = [];
-            
+
             columnRows.forEach(row => {
                 const name = row.querySelector('input[name="column_name[]"]').value;
                 const type = row.querySelector('select[name="column_type[]"]').value;
@@ -1312,7 +1466,7 @@ if ($currentTable) {
                 const nullValue = row.querySelector('select[name="column_null[]"]').value;
                 const defaultValue = row.querySelector('input[name="column_default[]"]').value;
                 const primary = row.querySelector('input[name="column_primary[]"]')?.checked || false;
-                
+
                 if (name) {
                     columns.push({
                         name: name,
@@ -1325,16 +1479,16 @@ if ($currentTable) {
                     });
                 }
             });
-            
+
             if (!tableName || columns.length === 0) {
                 showToast('Please provide table name and at least one column', 'warning');
                 return;
             }
-            
-            fetch('', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `action=create_table&table_name=${encodeURIComponent(tableName)}&columns=${encodeURIComponent(JSON.stringify(columns))}`
+
+            postForm({
+                action: 'create_table',
+                table_name: tableName,
+                columns: JSON.stringify(columns)
             })
             .then(response => response.json())
             .then(data => {
@@ -1354,24 +1508,23 @@ if ($currentTable) {
         // SQL Editor Functions
         function executeQuery() {
             const query = document.getElementById('sqlQuery').value;
-            
+
             if (!query.trim()) {
                 showToast('Please enter a SQL query', 'warning');
                 return;
             }
-            
-            fetch('', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `action=execute_query&query=${encodeURIComponent(query)}`
+
+            postForm({
+                action: 'execute_query',
+                query: query
             })
             .then(response => response.json())
             .then(data => {
                 const resultsDiv = document.getElementById('queryResults');
-                
+
                 if (data.success) {
                     let html = '<div class="alert alert-success">Query executed successfully</div>';
-                    
+
                     if (data.data) {
                         // SELECT query results
                         html += '<div class="table-responsive"><table class="table table-sm table-striped">';
@@ -1379,15 +1532,15 @@ if ($currentTable) {
                             // Headers
                             html += '<thead class="table-dark"><tr>';
                             Object.keys(data.data[0]).forEach(key => {
-                                html += `<th>${key}</th>`;
+                                html += `<th>${escapeHtml(key)}</th>`;
                             });
                             html += '</tr></thead><tbody>';
-                            
+
                             // Data
                             data.data.forEach(row => {
                                 html += '<tr>';
                                 Object.values(row).forEach(value => {
-                                    html += `<td>${value || ''}</td>`;
+                                    html += `<td>${escapeHtml(value)}</td>`;
                                 });
                                 html += '</tr>';
                             });
@@ -1399,11 +1552,11 @@ if ($currentTable) {
                         // Non-SELECT query results
                         html += `<p>Affected rows: ${data.affected_rows}</p>`;
                     }
-                    
+
                     resultsDiv.innerHTML = html;
                     showToast('Query executed successfully', 'success');
                 } else {
-                    resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${data.message}</div>`;
+                    resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${escapeHtml(data.message)}</div>`;
                     showToast('Query failed', 'error');
                 }
             })
@@ -1420,37 +1573,27 @@ if ($currentTable) {
 
         // Table Structure Functions
         function showTableStructure(tableName) {
-            fetch('', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `action=get_table_structure&table_name=${encodeURIComponent(tableName)}`
+            const content = document.getElementById('tableStructureContent');
+            content.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"></div></div>';
+
+            postForm({
+                action: 'get_table_structure',
+                table_name: tableName
             })
             .then(response => {
-                if (!response.ok) {
-                    // If the action doesn't exist, get structure via page reload with DESCRIBE
-                    const content = document.getElementById('tableStructureContent');
-                    content.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"></div></div>';
-                    
-                    // Simulate table structure display
-                    setTimeout(() => {
-                        content.innerHTML = `
-                            <p>Table structure for: <strong>${tableName}</strong></p>
-                            <p class="text-muted">To view complete table structure, use the SQL Editor with: <code>DESCRIBE \`${tableName}\`</code></p>
-                        `;
-                    }, 500);
-                }
                 return response.json();
             })
             .then(data => {
                 if (data && data.success) {
-                    // Handle structure data if implemented
-                    document.getElementById('tableStructureContent').innerHTML = data.html;
+                    content.innerHTML = data.html;
+                } else {
+                    content.innerHTML = `<div class="alert alert-danger">Error: ${escapeHtml(data.message || 'Unable to load structure')}</div>`;
                 }
             })
             .catch(error => {
-                console.log('Structure fetch failed, showing basic info');
+                content.innerHTML = '<div class="alert alert-danger">Error loading table structure</div>';
             });
-            
+
             new bootstrap.Modal(document.getElementById('tableStructureModal')).show();
         }
 
@@ -1459,11 +1602,10 @@ if ($currentTable) {
             if (!confirm(`Are you sure you want to DROP the table "${tableName}"? This action cannot be undone!`)) {
                 return;
             }
-            
-            fetch('', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `action=drop_table&table_name=${encodeURIComponent(tableName)}`
+
+            postForm({
+                action: 'drop_table',
+                table_name: tableName
             })
             .then(response => response.json())
             .then(data => {
@@ -1483,11 +1625,10 @@ if ($currentTable) {
             if (!confirm(`Are you sure you want to TRUNCATE the table "${tableName}"? All data will be deleted!`)) {
                 return;
             }
-            
-            fetch('', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `action=truncate_table&table_name=${encodeURIComponent(tableName)}`
+
+            postForm({
+                action: 'truncate_table',
+                table_name: tableName
             })
             .then(response => response.json())
             .then(data => {
@@ -1503,7 +1644,7 @@ if ($currentTable) {
             });
         }
 
-        function addColumn(tableName) {
+        function openAddColumnModal(tableName) {
             document.getElementById('addColumnTableName').value = tableName;
             new bootstrap.Modal(document.getElementById('addColumnModal')).show();
         }
@@ -1515,16 +1656,20 @@ if ($currentTable) {
             const columnLength = document.getElementById('newColumnLength').value;
             const columnNull = document.getElementById('newColumnNull').value;
             const columnDefault = document.getElementById('newColumnDefault').value;
-            
+
             if (!columnName) {
                 showToast('Please enter column name', 'warning');
                 return;
             }
-            
-            fetch('', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `action=add_column&table_name=${encodeURIComponent(tableName)}&column_name=${encodeURIComponent(columnName)}&column_type=${columnType}&column_length=${columnLength}&column_null=${columnNull}&column_default=${encodeURIComponent(columnDefault)}`
+
+            postForm({
+                action: 'add_column',
+                table_name: tableName,
+                column_name: columnName,
+                column_type: columnType,
+                column_length: columnLength,
+                column_null: columnNull,
+                column_default: columnDefault
             })
             .then(response => response.json())
             .then(data => {
@@ -1545,11 +1690,11 @@ if ($currentTable) {
             if (!confirm(`Are you sure you want to DROP the column "${columnName}" from table "${tableName}"?`)) {
                 return;
             }
-            
-            fetch('', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `action=drop_column&table_name=${encodeURIComponent(tableName)}&column_name=${encodeURIComponent(columnName)}`
+
+            postForm({
+                action: 'drop_column',
+                table_name: tableName,
+                column_name: columnName
             })
             .then(response => response.json())
             .then(data => {
@@ -1569,33 +1714,33 @@ if ($currentTable) {
         function downloadTable() {
             const form = document.getElementById('downloadForm');
             clearFormInputs(form);
-            
+
             addFormInput(form, 'download', '1');
             addFormInput(form, 'download_type', 'single_table');
             addFormInput(form, 'export_type', 'all');
-            
+
             form.submit();
         }
 
         function downloadSelected() {
             const checkedBoxes = document.querySelectorAll('.row-checkbox:checked');
-            
+
             if (checkedBoxes.length === 0) {
                 showToast('Please select at least one row to download', 'warning');
                 return;
             }
-            
+
             const form = document.getElementById('downloadForm');
             clearFormInputs(form);
-            
+
             addFormInput(form, 'download', '1');
             addFormInput(form, 'download_type', 'single_table');
             addFormInput(form, 'export_type', 'selected');
-            
+
             checkedBoxes.forEach(checkbox => {
                 addFormInput(form, 'selected_ids[]', checkbox.value);
             });
-            
+
             form.submit();
         }
 
@@ -1616,34 +1761,34 @@ if ($currentTable) {
         function showToast(message, type = 'info') {
             // Remove existing toasts
             document.querySelectorAll('.custom-toast').forEach(toast => toast.remove());
-            
+
             const toastContainer = document.createElement('div');
             toastContainer.className = 'position-fixed top-0 end-0 p-3';
             toastContainer.style.zIndex = '1080';
-            
+
             const alertClass = {
                 'success': 'alert-success',
                 'error': 'alert-danger',
                 'warning': 'alert-warning',
                 'info': 'alert-info'
             }[type] || 'alert-info';
-            
+
             const icon = {
                 'success': 'bi-check-circle',
                 'error': 'bi-exclamation-triangle',
                 'warning': 'bi-exclamation-circle',
                 'info': 'bi-info-circle'
             }[type] || 'bi-info-circle';
-            
+
             toastContainer.innerHTML = `
                 <div class="alert ${alertClass} alert-dismissible fade show custom-toast" role="alert">
-                    <i class="bi ${icon}"></i> ${message}
+                    <i class="bi ${icon}"></i> ${escapeHtml(message)}
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>
             `;
-            
+
             document.body.appendChild(toastContainer);
-            
+
             // Auto remove after 5 seconds
             setTimeout(() => {
                 toastContainer.remove();
@@ -1657,11 +1802,13 @@ if ($currentTable) {
         document.addEventListener('keydown', function(e) {
             // Ctrl/Cmd + A to select all rows
             if ((e.ctrlKey || e.metaKey) && e.key === 'a' && !e.target.classList.contains('cell-input')) {
+                const selectAll = document.getElementById('select-all');
+                if (!selectAll) return;
                 e.preventDefault();
-                document.getElementById('select-all').checked = true;
+                selectAll.checked = true;
                 toggleAll();
             }
-            
+
             // Escape to cancel insert
             if (e.key === 'Escape') {
                 const insertRow = document.getElementById('insert-row');
@@ -1669,7 +1816,7 @@ if ($currentTable) {
                     cancelInsert();
                 }
             }
-            
+
             // Ctrl/Cmd + Enter to execute SQL query
             if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && document.getElementById('sqlEditorModal').classList.contains('show')) {
                 e.preventDefault();
@@ -1730,11 +1877,6 @@ if ($currentTable) {
             document.getElementById('addColumnForm').reset();
         });
 
-        // Add the missing addColumn function for create table modal
-        function addColumn() {
-            addColumnToForm();
-        }
-
         // Auto-complete for SQL Editor
         document.getElementById('sqlQuery').addEventListener('keydown', function(e) {
             if (e.key === 'Tab') {
@@ -1750,7 +1892,7 @@ if ($currentTable) {
         function insertSampleQuery(type) {
             const textarea = document.getElementById('sqlQuery');
             let query = '';
-            
+
             switch(type) {
                 case 'select':
                     query = `SELECT * FROM \`${currentTable}\` LIMIT 10;`;
@@ -1765,7 +1907,7 @@ if ($currentTable) {
                     query = `DELETE FROM \`${currentTable}\` WHERE id = 1;`;
                     break;
             }
-            
+
             textarea.value = query;
             textarea.focus();
         }

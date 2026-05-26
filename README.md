@@ -64,8 +64,8 @@ A powerful, web-based MySQL database management system built with PHP and Bootst
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/advanced-sql-database-manager.git
-   cd advanced-sql-database-manager
+   git clone https://github.com/Kamrulisl/advance_database_by_php.git
+   cd advance_database_by_php
    ```
 
 2. **Configure Database Connection**
@@ -172,14 +172,10 @@ A powerful, web-based MySQL database management system built with PHP and Bootst
 ## 📁 File Structure
 
 ```
-advanced-sql-database-manager/
-├── index.php              # Main application file
-├── README.md              # Documentation
-├── LICENSE               # License file
-└── screenshots/          # Application screenshots
-    ├── dashboard.png
-    ├── sql-editor.png
-    └── table-creation.png
+advance_database_by_php/
+├── index.php              # Web server entrypoint
+├── db.php                 # Main application file
+└── README.md              # Documentation
 ```
 
 ## 🔧 Configuration Options
@@ -210,7 +206,7 @@ We welcome contributions! Here's how to get involved:
 
 1. **Fork the Repository**
    ```bash
-   git fork https://github.com/yourusername/advanced-sql-database-manager.git
+   git clone https://github.com/Kamrulisl/advance_database_by_php.git
    ```
 
 2. **Create Feature Branch**
@@ -259,11 +255,11 @@ Please describe:
 - How it should work
 - Any examples from other tools
 
-**Create Issues**: [GitHub Issues](https://github.com/yourusername/advanced-sql-database-manager/issues)
+**Create Issues**: [GitHub Issues](https://github.com/Kamrulisl/advance_database_by_php/issues)
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project includes the MIT License text below.
 
 ```
 MIT License
@@ -283,8 +279,8 @@ copies or substantial portions of the Software.
 
 ## 👥 Authors & Acknowledgments
 
-- **Primary Developer**: Your Name (@yourusername)
-- **Contributors**: See [Contributors](https://github.com/yourusername/advanced-sql-database-manager/contributors)
+- **Primary Developer**: Kamrul Islam (@Kamrulisl)
+- **Contributors**: See [Contributors](https://github.com/Kamrulisl/advance_database_by_php/contributors)
 
 ### 🙏 **Acknowledgments**
 - [Bootstrap](https://getbootstrap.com/) for the responsive UI framework
@@ -294,10 +290,9 @@ copies or substantial portions of the Software.
 
 ## 📊 Project Stats
 
-![GitHub stars](https://img.shields.io/github/stars/yourusername/advanced-sql-database-manager?style=social)
-![GitHub forks](https://img.shields.io/github/forks/yourusername/advanced-sql-database-manager?style=social)
-![GitHub issues](https://img.shields.io/github/issues/yourusername/advanced-sql-database-manager)
-![GitHub license](https://img.shields.io/github/license/yourusername/advanced-sql-database-manager)
+![GitHub stars](https://img.shields.io/github/stars/Kamrulisl/advance_database_by_php?style=social)
+![GitHub forks](https://img.shields.io/github/forks/Kamrulisl/advance_database_by_php?style=social)
+![GitHub issues](https://img.shields.io/github/issues/Kamrulisl/advance_database_by_php)
 
 ## 🆕 Changelog
 
@@ -320,12 +315,10 @@ copies or substantial portions of the Software.
 Need help? Here are your options:
 
 - 📖 **Documentation**: Check this README and inline comments
-- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/yourusername/advanced-sql-database-manager/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/yourusername/advanced-sql-database-manager/discussions)
-- 📧 **Email**: your.email@example.com
+- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/Kamrulisl/advance_database_by_php/issues)
 
 ---
 
 ⭐ **If you find this project helpful, please consider giving it a star!** ⭐
 
-Made with ❤️ by [Your Name](https://github.com/yourusername)
+Made with ❤️ by [Kamrul Islam](https://github.com/Kamrulisl)
